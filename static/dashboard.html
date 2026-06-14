@@ -11,27 +11,22 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .header { background: linear-gradient(135deg, #1e293b, #334155); padding: 20px 30px; border-bottom: 1px solid rgba(148,163,184,0.15); text-align: center; }
 .header h1 { font-size: 24px; font-weight: 700; color: #f1f5f9; }
 .header .sub { font-size: 13px; color: #94a3b8; margin-top: 4px; }
-.header .update-time { font-size: 12px; color: #64748b; margin-top: 2px; }
+.header .update-time { font-size: 14px; color: #60a5fa; margin-top: 2px; font-weight: 500; }
 .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-
-/* Cards */
+.live-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(74,222,128,0.15); color: #4ade80; margin-left: 8px; animation: pulse 2s infinite; }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 30px; }
 .card { background: linear-gradient(135deg, #1e293b, #2d3a4e); border-radius: 12px; padding: 20px; border: 1px solid rgba(148,163,184,0.1); }
 .card .label { font-size: 13px; color: #94a3b8; margin-bottom: 8px; }
-.card .value { font-size: 28px; font-weight: 700; }
+.card .value { font-size: 28px; font-weight: 700; transition: color 0.3s; }
 .card .value.positive { color: #4ade80; }
 .card .value.negative { color: #f87171; }
 .card .value.neutral { color: #fbbf24; }
 .card .value.info { color: #60a5fa; }
-.card .sub-value { font-size: 12px; color: #64748b; margin-top: 4px; }
-
-/* Charts section */
 .charts-section { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 30px; }
 .chart-card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid rgba(148,163,184,0.1); }
 .chart-card h3 { font-size: 15px; color: #94a3b8; margin-bottom: 12px; }
 .chart-card canvas { max-height: 280px; }
-
-/* Table section */
 .table-section { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid rgba(148,163,184,0.1); margin-bottom: 30px; }
 .table-section h3 { font-size: 15px; color: #94a3b8; margin-bottom: 12px; }
 table { width: 100%; border-collapse: collapse; }
@@ -41,47 +36,37 @@ tr:hover td { background: rgba(148,163,184,0.05); }
 td.num { text-align: right; font-family: 'SF Mono', 'Fira Code', monospace; }
 td.pos { color: #4ade80; }
 td.neg { color: #f87171; }
-td.neu { color: #fbbf24; }
 td.info { color: #60a5fa; }
-
-/* Auto-refresh badge */
-.badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(74,222,128,0.15); color: #4ade80; margin-left: 8px; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>🏷️ ARK 代币数据监控看板 <span class="badge">每5分钟自动刷新</span></h1>
-  <div class="update-time" id="updateTime">⏳ 最近更新: 加载中...</div>
-  <div class="sub" id="updateStatus">正在采集链上数据...</div>
+  <h1>🏷️ ARK 代币数据实时监控看板 <span class="live-badge">● 实时</span></h1>
+  <div class="update-time" id="updateTime">⏳ 正在连接...</div>
+  <div class="sub" id="updateStatus">连接实时数据中...</div>
 </div>
 
 <div class="container">
-  <!-- Top 4 cards -->
   <div class="cards">
     <div class="card">
       <div class="label">💰 今日动静态提取</div>
       <div class="value negative" id="todayBonus">--</div>
-      <div class="sub-value" id="todayBonusDetail"></div>
     </div>
     <div class="card">
       <div class="label">📥 今日新增质押</div>
       <div class="value positive" id="todayStakeIn">--</div>
-      <div class="sub-value" id="todayStakeInDetail"></div>
     </div>
     <div class="card">
       <div class="label">📤 今日赎回</div>
       <div class="value negative" id="todayStakeOut">--</div>
-      <div class="sub-value" id="todayStakeOutDetail"></div>
     </div>
     <div class="card">
       <div class="label">📊 今日净质押</div>
       <div class="value" id="todayNetStake">--</div>
-      <div class="sub-value" id="todayNetStakeDetail"></div>
     </div>
   </div>
 
-  <!-- Charts -->
   <div class="charts-section">
     <div class="chart-card">
       <h3>📈 奖金池每日流出趋势</h3>
@@ -93,7 +78,6 @@ td.info { color: #60a5fa; }
     </div>
   </div>
 
-  <!-- Table -->
   <div class="table-section">
     <h3>📋 过去7天每日汇总</h3>
     <table>
@@ -109,188 +93,123 @@ td.info { color: #60a5fa; }
         </tr>
       </thead>
       <tbody id="tableBody">
-        <tr><td colspan="7" style="text-align:center;color:#64748b;">加载中...</td></tr>
+        <tr><td colspan="7" style="text-align:center;color:#64748b;">等待数据...</td></tr>
       </tbody>
     </table>
   </div>
 </div>
 
 <script>
+let bonusChart = null;
+let stakeChart = null;
+
 function fmt(v) {
   if (v === undefined || v === null) return '--';
   return Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4});
 }
-
 function fmtFull(v) {
   return Number(v).toLocaleString(undefined, {minimumFractionDigits: 4, maximumFractionDigits: 4});
 }
 
-let bonusChart = null;
-let stakeChart = null;
-
-function updateCards(today, allData) {
-  const bonus = today.bonus_withdrawal || 0;
-  const stakeIn = today.stake_in || 0;
-  const stakeOut = today.stake_out || 0;
-  const netStake = today.net_stake || 0;
-
-  document.getElementById('todayBonus').textContent = fmt(bonus);
-  document.getElementById('todayStakeIn').textContent = fmt(stakeIn);
-  document.getElementById('todayStakeOut').textContent = fmt(stakeOut);
-
+function updateDashboard(data) {
+  const summary = data.daily_summary || {};
+  const today = summary[Object.keys(summary).sort().pop()] || {};
+  
+  // Update cards
+  document.getElementById('todayBonus').textContent = fmt(today.bonus_withdrawal);
+  document.getElementById('todayStakeIn').textContent = fmt(today.stake_in);
+  document.getElementById('todayStakeOut').textContent = fmt(today.stake_out);
   const netEl = document.getElementById('todayNetStake');
-  netEl.textContent = fmt(netStake);
-  netEl.className = 'value ' + (netStake >= 0 ? 'positive' : 'negative');
+  netEl.textContent = fmt(today.net_stake);
+  netEl.className = 'value ' + (today.net_stake >= 0 ? 'positive' : 'negative');
+  
+  // Update time
+  const updateDate = data.last_updated ? new Date(data.last_updated) : null;
+  const localTime = updateDate ? updateDate.toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', timeZoneName: 'short'}) : '--';
+  document.getElementById('updateTime').textContent = '🕐 最新更新: ' + localTime;
+  document.getElementById('updateStatus').textContent = '📦 区块: ' + (data.current_block || '--').toLocaleString() + ' | 实时监控中 (15秒轮询)';
+  
+  // Charts
+  updateCharts(summary);
+  // Table
+  updateTable(summary);
 }
 
-function updateCharts(allData) {
-  const summary = allData.daily_summary || {};
+function updateCharts(summary) {
   const dates = Object.keys(summary).sort();
-
   if (dates.length === 0) return;
-
+  const labels = dates.map(d => d.slice(5));
   const bonusOut = dates.map(d => summary[d].bonus_withdrawal || 0);
   const stakeIn = dates.map(d => summary[d].stake_in || 0);
   const netStake = dates.map(d => summary[d].net_stake || 0);
 
-  // Format dates for display
-  const labels = dates.map(d => {
-    const parts = d.split('-');
-    return parts[1] + '/' + parts[2];
-  });
-
-  // Bonus chart
-  const ctx1 = document.getElementById('chartBonus').getContext('2d');
   if (bonusChart) bonusChart.destroy();
-  bonusChart = new Chart(ctx1, {
+  bonusChart = new Chart(document.getElementById('chartBonus'), {
     type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        label: '动静态提取',
-        data: bonusOut,
-        backgroundColor: 'rgba(248,113,113,0.6)',
-        borderColor: '#f87171',
-        borderWidth: 1,
-        borderRadius: 4
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } },
-      scales: {
-        x: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: 'rgba(148,163,184,0.05)' } },
-        y: { ticks: { color: '#64748b', font: { size: 11 }, callback: v => fmt(v) }, grid: { color: 'rgba(148,163,184,0.08)' } }
-      }
-    }
+    data: { labels, datasets: [{ label: '动静态提取', data: bonusOut, backgroundColor: 'rgba(248,113,113,0.6)', borderColor: '#f87171', borderWidth: 1, borderRadius: 4 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } }, scales: { x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.05)' } }, y: { ticks: { color: '#64748b', callback: v => fmt(v) }, grid: { color: 'rgba(148,163,184,0.08)' } } } }
   });
-
-  // Stake chart
-  const ctx2 = document.getElementById('chartStake').getContext('2d');
   if (stakeChart) stakeChart.destroy();
-  stakeChart = new Chart(ctx2, {
+  stakeChart = new Chart(document.getElementById('chartStake'), {
     type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [
-        {
-          label: '新增质押',
-          data: stakeIn,
-          backgroundColor: 'rgba(74,222,128,0.6)',
-          borderColor: '#4ade80',
-          borderWidth: 1,
-          borderRadius: 4
-        },
-        {
-          label: '净质押',
-          data: netStake,
-          type: 'line',
-          borderColor: '#60a5fa',
-          backgroundColor: 'rgba(96,165,250,0.1)',
-          borderWidth: 2,
-          pointBackgroundColor: '#60a5fa',
-          pointRadius: 4,
-          fill: true,
-          tension: 0.3
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } },
-      scales: {
-        x: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: 'rgba(148,163,184,0.05)' } },
-        y: { ticks: { color: '#64748b', font: { size: 11 }, callback: v => fmt(v) }, grid: { color: 'rgba(148,163,184,0.08)' } }
-      }
-    }
+    data: { labels, datasets: [
+      { label: '新增质押', data: stakeIn, backgroundColor: 'rgba(74,222,128,0.6)', borderColor: '#4ade80', borderWidth: 1, borderRadius: 4 },
+      { label: '净质押', data: netStake, type: 'line', borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.1)', borderWidth: 2, pointBackgroundColor: '#60a5fa', pointRadius: 4, fill: true, tension: 0.3 }
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#94a3b8', font: { size: 11 } } } }, scales: { x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.05)' } }, y: { ticks: { color: '#64748b', callback: v => fmt(v) }, grid: { color: 'rgba(148,163,184,0.08)' } } } }
   });
 }
 
-function updateTable(allData) {
-  const summary = allData.daily_summary || {};
-  const dates = Object.keys(summary).sort().reverse(); // newest first
+function updateTable(summary) {
+  const dates = Object.keys(summary).sort().reverse();
   const tbody = document.getElementById('tableBody');
-
-  if (dates.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;">暂无数据</td></tr>';
-    return;
-  }
-
+  if (dates.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;">暂无数据</td></tr>'; return; }
   tbody.innerHTML = dates.map(d => {
-    const row = summary[d];
-    const bonus = row.bonus_withdrawal || 0;
-    const bonusBal = row.bonus_balance || 0;
-    const si = row.stake_in || 0;
-    const so = row.stake_out || 0;
-    const stakeBal = row.stake_balance || 0;
-    const net = row.net_stake || 0;
-    return `<tr>
-      <td>${d}</td>
-      <td class="num neg">${fmtFull(bonus)}</td>
-      <td class="num info">${fmtFull(bonusBal)}</td>
-      <td class="num pos">${fmtFull(si)}</td>
-      <td class="num neg">${fmtFull(so)}</td>
-      <td class="num info">${fmtFull(stakeBal)}</td>
-      <td class="num ${net >= 0 ? 'pos' : 'neg'}">${fmtFull(net)}</td>
-    </tr>`;
+    const r = summary[d];
+    const net = r.net_stake || 0;
+    return `<tr><td>${d}</td><td class="num neg">${fmtFull(r.bonus_withdrawal)}</td><td class="num info">${fmtFull(r.bonus_balance)}</td><td class="num pos">${fmtFull(r.stake_in)}</td><td class="num neg">${fmtFull(r.stake_out)}</td><td class="num info">${fmtFull(r.stake_balance)}</td><td class="num ${net >= 0 ? 'pos' : 'neg'}">${fmtFull(net)}</td></tr>`;
   }).join('');
 }
 
-async function fetchData() {
-  try {
-    const [dataRes, todayRes] = await Promise.all([
-      fetch('/api/data'),
-      fetch('/api/today')
-    ]);
-    const allData = await dataRes.json();
-    const today = await todayRes.json();
+// Connect via WebSocket
+const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsUrl = protocol + '//' + location.hostname + ':8898';
+let ws = null;
 
-    if (allData.error) {
-      document.getElementById('updateStatus').textContent = '⚠️ ' + allData.error;
-      return;
+function connectWS() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => {
+    document.getElementById('updateTime').textContent = '🕐 等待数据...';
+    document.getElementById('updateStatus').textContent = '● 已连接实时通道';
+  };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'full_update') {
+      updateDashboard(msg.data);
     }
-
-    const updated = allData.last_updated || '--';
-    const block = allData.current_block || '--';
-    
-    // Format UTC time to local
-    const localTime = updated !== '--' ? new Date(updated + 'Z').toLocaleString('zh-CN') : '--';
-    document.getElementById('updateStatus').textContent = '🔄 最近更新: ' + localTime + ' | 区块高度: ' + block.toLocaleString();
-
-    updateCards(today, allData);
-    updateCharts(allData);
-    updateTable(allData);
-
-  } catch (e) {
-    document.getElementById('updateStatus').textContent = '⚠️ 数据加载失败: ' + e.message;
-  }
+  };
+  ws.onclose = () => {
+    document.getElementById('updateStatus').textContent = '⚠️ 连接断开，5秒后重连...';
+    setTimeout(connectWS, 5000);
+  };
+  ws.onerror = () => { ws.close(); };
 }
 
-// Auto-refresh every 3 seconds (for initial load), then every 60 seconds
-fetchData();
-setInterval(fetchData, 60000); // Check every 60s (data is updated every 5 min by server)
+// Also poll REST API as fallback
+async function pollRest() {
+  try {
+    const r = await fetch('/api/data');
+    const data = await r.json();
+    if (data.daily_summary && Object.keys(data.daily_summary).length > 0) {
+      updateDashboard(data);
+    }
+  } catch(e) {}
+}
+
+// Start
+connectWS();
+pollRest();
+setInterval(pollRest, 15000);
 </script>
 </body>
 </html>
