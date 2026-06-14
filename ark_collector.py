@@ -130,7 +130,7 @@ def main():
                       "stake_in": si, "stake_out": so, "stake_balance": s_bal.get(d, 0), "net_stake": net}
 
     with open(os.path.join(DATA_DIR, "ark_data.json"), "w") as f:
-        json.dump({"last_updated": datetime.now(timezone.utc).isoformat(), "current_block": current_block,
+        json.dump({"last_updated": datetime.now(BJT).isoformat(), "current_block": current_block,
                    "daily_summary": summary,
                    "current_balances": {"bonus_pool": round(bonus_bal, 4), "stake_pool": round(stake_bal, 4)}}, f, indent=2)
     td = summary.get(today_bjt, {})
@@ -138,7 +138,7 @@ def main():
         json.dump({"bonus_withdrawal": td.get("bonus_withdrawal", 0), "stake_in": td.get("stake_in", 0),
                    "stake_out": td.get("stake_out", 0), "net_stake": td.get("net_stake", 0),
                    "bonus_balance": td.get("bonus_balance", 0), "stake_balance": td.get("stake_balance", 0),
-                   "last_updated": datetime.now(timezone.utc).isoformat()}, f, indent=2)
+                   "last_updated": datetime.now(BJT).isoformat()}, f, indent=2)
 
 if __name__ == "__main__":
     main()

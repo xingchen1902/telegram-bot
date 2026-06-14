@@ -5,10 +5,11 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from bottle import Bottle, static_file
 
+BJT = timezone(timedelta(hours=8))
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 COLLECTOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ark_collector.py")
@@ -18,14 +19,14 @@ UPDATE_INTERVAL = 300
 app = Bottle()
 
 def run_collector():
-    print(f"[{datetime.now().isoformat()}] Running collector...")
+    print(f"[{datetime.now(BJT).isoformat()}] Running collector...")
     result = subprocess.run(["python3", COLLECTOR], capture_output=True, text=True, timeout=600)
     for line in (result.stdout or "").strip().split('\n'):
         if line.strip(): print(f"  {line}")
-    print(f"[{datetime.now().isoformat()}] Collector finished")
+    print(f"[{datetime.now(BJT).isoformat()}] Collector finished")
 
 def collector_loop():
-    print(f"[{datetime.now().isoformat()}] Starting first collection...")
+    print(f"[{datetime.now(BJT).isoformat()}] Starting first collection...")
     try:
         run_collector()
     except Exception as e:
@@ -37,7 +38,6 @@ def collector_loop():
         except Exception as e:
             print(f"Collector error: {e}")
 
-# Start background collector thread on module load (works with gunicorn)
 t = threading.Thread(target=collector_loop, daemon=True)
 t.start()
 
