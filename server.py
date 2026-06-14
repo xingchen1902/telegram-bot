@@ -20,28 +20,33 @@ ADDR_STAKE = "0xd1D95292F450b665566df4c4255615eF4Ed9BD0B"
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex()
 
 WS_CLIENTS = set()
-SEEN_LOGS = set()
+SEEN_LOGS = set(tuple)
 DATA = {"daily_summary": {}, "current_block": 0, "last_updated": ""}
-MONITOR_BONUS_DAILY = {}
-MONITOR_STAKE_DAILY = {}
+BONUS_DAILY = {}
+STAKE_DAILY = {}
 
 # ====== RPC ======
 async def rpc(session, method, params=None):
     if params is None: params = []
-    try:
-        async with session.post(RPC_URL, json={"jsonrpc":"2.0","method":method,"params":params,"id":1}, timeout=30) as r:
-            return await r.json()
-    except: return {}
+    for attempt in range(3):
+        try:
+            async with session.post(RPC_URL, json={"jsonrpc":"2.0","method":method,"params":params,"id":1}, timeout=30) as r:
+                d = await r.json()
+                if "result" in d: return d
+                if "error" in d: print(f"  RPC err: {d['error']}")
+        except: pass
+        await asyncio.sleep(1)
+    return {}
 
 async def rpc_batch(session, items):
     try:
-        async with session.post(RPC_URL, json=items, timeout=45) as r:
+        async with session.post(RPC_URL, json=items, timeout=60) as r:
             return await r.json()
     except: return []
 
 async def get_block(session):
     d = await rpc(session, "eth_blockNumber")
-    return int(d["result"], 16)
+    return int(d["result"], 16) if d.get("result") else 0
 
 async def get_balance(session, addr):
     d = await rpc(session, "eth_call", [{"to": TOKEN, "data": "0x70a08231"+addr[2:].lower().zfill(64)}, "latest"])
@@ -49,24 +54,33 @@ async def get_balance(session, addr):
 
 async def get_ts(session, blocks):
     t = {}
-    for i in range(0, len(blocks), 200):
-        batch = [{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":[hex(bn),False],"id":bn} for bn in blocks[i:i+200]]
+    for i in range(0, len(blocks), 100):
+        batch = [{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":[hex(bn),False],"id":bn} for bn in blocks[i:i+100]]
         for r in await rpc_batch(session, batch):
             if r.get("result"): t[r["id"]] = int(r["result"]["timestamp"], 16)
     return t
 
-async def get_logs(session, addr, f, t):
+async def fetch_logs(session, addr, f, t, retries=3):
     padded = "0x" + addr[2:].lower().zfill(64)
-    logs = {}
-    for start in range(f, t+1, 25000):
-        end = min(start+24999, t)
+    all_logs = {}
+    chunks = range(f, t+1, 2000)  # Smaller chunks (2000 blocks) to avoid RPC issues
+    total = len(list(chunks))
+    for idx, start in enumerate(chunks):
+        end = min(start+1999, t)
         for tf in [[TRANSFER_TOPIC, padded, None], [TRANSFER_TOPIC, None, padded]]:
-            d = await rpc(session, "eth_getLogs", [{"fromBlock":hex(start),"toBlock":hex(end),"address":TOKEN,"topics":tf}])
-            if isinstance(d.get("result"), list):
-                for l in d["result"]:
-                    k = l["transactionHash"]+l["logIndex"]
-                    if k not in SEEN_LOGS: SEEN_LOGS.add(k); logs[k]=l
-    return list(logs.values())
+            for attempt in range(retries):
+                d = await rpc(session, "eth_getLogs", [{"fromBlock":hex(start),"toBlock":hex(end),"address":TOKEN,"topics":tf}])
+                if isinstance(d.get("result"), list):
+                    for l in d["result"]:
+                        k = (l["transactionHash"], l["logIndex"])
+                        if k not in SEEN_LOGS:
+                            SEEN_LOGS.add(k)
+                            all_logs[k] = l
+                    break
+                await asyncio.sleep(0.5)
+        if (idx+1) % 20 == 0:
+            print(f"  Logs {addr[:10]}...: {idx+1}/{total} chunks ({len(all_logs)} logs found)")
+    return list(all_logs.values())
 
 async def parse_logs(session, logs, addr):
     al = addr.lower()
@@ -106,59 +120,62 @@ async def broadcast(msg):
         d = json.dumps(msg)
         await asyncio.gather(*(c.send(d) for c in WS_CLIENTS.copy() if c.open), return_exceptions=True)
 
-# ====== Monitor Loop ======
 async def monitor_loop():
-    global DATA, MONITOR_BONUS_DAILY, MONITOR_STAKE_DAILY
+    global DATA, BONUS_DAILY, STAKE_DAILY
     async with aiohttp.ClientSession() as sess:
         current = await get_block(sess)
+        if not current:
+            print("ERROR: Cannot get current block")
+            return
         target = int((datetime.now(BJT)-timedelta(days=7)).timestamp())
         lo, hi = max(1,current-1200000), current
         while lo < hi:
             mid = (lo+hi)//2
             d = await rpc(sess, "eth_getBlockByNumber", [hex(mid), False])
-            if int(d.get("result",{}).get("timestamp",0),16) < target: lo = mid+1
+            ts = int(d.get("result",{}).get("timestamp",0),16) if d.get("result") else 0
+            if ts < target: lo = mid+1
             else: hi = mid
-        print(f"History: blocks {lo} -> {current}")
-        bl = await get_logs(sess, ADDR_BONUS, lo, current)
-        sl = await get_logs(sess, ADDR_STAKE, lo, current)
+        print(f"History: {lo} -> {current} ({current-lo} blocks)")
+        bl = await fetch_logs(sess, ADDR_BONUS, lo, current)
+        sl = await fetch_logs(sess, ADDR_STAKE, lo, current)
+        print(f"Bonus logs: {len(bl)}, Stake logs: {len(sl)}")
         bd = await parse_logs(sess, bl, ADDR_BONUS)
         sd = await parse_logs(sess, sl, ADDR_STAKE)
+        print("Bonus daily:", json.dumps({d:{k:round(v,4) for k,v in bd[d].items()} for d in sorted(bd.keys())}))
+        print("Stake daily:", json.dumps({d:{k:round(v,4) for k,v in sd[d].items()} for d in sorted(sd.keys())}))
         bb = await get_balance(sess, ADDR_BONUS)
         sb = await get_balance(sess, ADDR_STAKE)
-        MONITOR_BONUS_DAILY, MONITOR_STAKE_DAILY = bd, sd
+        print(f"Balances: bonus={bb:.4f}, stake={sb:.4f}")
+        BONUS_DAILY, STAKE_DAILY = bd, sd
         full, td = build_summary(bd, sd, bb, sb, current)
         save_files(full, {**td, "last_updated": full["last_updated"]})
         DATA = full
         await broadcast({"type":"full_update","data":full})
-        print(f"History done. Block {current}")
+        print(f"Done. Block {current}")
         last = current
         while True:
             try:
                 current = await get_block(sess)
                 if current > last:
-                    bl = await get_logs(sess, ADDR_BONUS, last+1, current)
-                    sl = await get_logs(sess, ADDR_STAKE, last+1, current)
-                    if bl or sl:
-                        bn = await parse_logs(sess, bl, ADDR_BONUS)
-                        sn = await parse_logs(sess, sl, ADDR_STAKE)
-                        for d,v in bn.items():
-                            if d not in MONITOR_BONUS_DAILY: MONITOR_BONUS_DAILY[d]={"in":0,"out":0}
-                            MONITOR_BONUS_DAILY[d]["in"]+=v["in"]; MONITOR_BONUS_DAILY[d]["out"]+=v["out"]
-                        for d,v in sn.items():
-                            if d not in MONITOR_STAKE_DAILY: MONITOR_STAKE_DAILY[d]={"in":0,"out":0}
-                            MONITOR_STAKE_DAILY[d]["in"]+=v["in"]; MONITOR_STAKE_DAILY[d]["out"]+=v["out"]
-                        bb = await get_balance(sess, ADDR_BONUS)
-                        sb = await get_balance(sess, ADDR_STAKE)
-                        full, td = build_summary(MONITOR_BONUS_DAILY, MONITOR_STAKE_DAILY, bb, sb, current)
-                        save_files(full, {**td, "last_updated": full["last_updated"]})
-                        DATA = full
-                        await broadcast({"type":"full_update","data":full})
-                        print(f"  [{datetime.now(BJT).strftime('%H:%M:%S')}] Block {current}")
+                    for addr, daily_store in [(ADDR_BONUS, BONUS_DAILY), (ADDR_STAKE, STAKE_DAILY)]:
+                        logs = await fetch_logs(sess, addr, last+1, current)
+                        if logs:
+                            parsed = await parse_logs(sess, logs, addr)
+                            for d,v in parsed.items():
+                                if d not in daily_store: daily_store[d] = {"in":0,"out":0}
+                                daily_store[d]["in"]+=v["in"]
+                                daily_store[d]["out"]+=v["out"]
+                    bb = await get_balance(sess, ADDR_BONUS)
+                    sb = await get_balance(sess, ADDR_STAKE)
+                    full, td = build_summary(BONUS_DAILY, STAKE_DAILY, bb, sb, current)
+                    save_files(full, {**td, "last_updated": full["last_updated"]})
+                    DATA = full
+                    await broadcast({"type":"full_update","data":full})
+                    print(f"  [{datetime.now(BJT).strftime('%H:%M:%S')}] Block {current}")
                     last = current
             except Exception as e: print(f"  Poll: {e}")
             await asyncio.sleep(15)
 
-# ====== WebSocket Handler ======
 async def ws_handler(ws):
     WS_CLIENTS.add(ws)
     print(f"  WS client ({len(WS_CLIENTS)})")
@@ -167,17 +184,12 @@ async def ws_handler(ws):
             await ws.send(json.dumps({"type":"full_update","data":DATA}))
         async for _ in ws: pass
     except: pass
-    finally:
-        WS_CLIENTS.discard(ws)
+    finally: WS_CLIENTS.discard(ws)
 
-# ====== HTTP request handler for WebSocket upgrade detection ======
 async def process_request(path, request_headers):
-    """Intercept non-WebSocket requests and handle them as HTTP"""
     if path == "/":
-        try:
-            with open(os.path.join(STATIC_DIR,"dashboard.html"),"rb") as f:
-                return (200, [("Content-Type","text/html"),("Access-Control-Allow-Origin","*")], f.read())
-        except: return (500, [], b"Error")
+        with open(os.path.join(STATIC_DIR,"dashboard.html"),"rb") as f:
+            return (200, [("Content-Type","text/html"),("Access-Control-Allow-Origin","*")], f.read())
     elif path == "/api/data":
         if DATA["daily_summary"]:
             body = json.dumps(DATA).encode()
@@ -194,17 +206,16 @@ async def process_request(path, request_headers):
         fp = os.path.join(STATIC_DIR, fn)
         if os.path.exists(fp):
             with open(fp,"rb") as f:
-                return (200, [("Content-Type","text/html" if fn.endswith(".html") else "text/css"),("Access-Control-Allow-Origin","*")], f.read())
-    return None  # Let websockets handle (WebSocket upgrade)
+                ct = "text/html" if fn.endswith(".html") else "text/css"
+                return (200, [("Content-Type",ct),("Access-Control-Allow-Origin","*")], f.read())
+    return None
 
 async def main():
     port = int(os.environ.get("PORT", 8899))
     asyncio.create_task(monitor_loop())
-    
-    # Use websockets library with process_request for HTTP
     async with websockets.serve(ws_handler, "0.0.0.0", port, process_request=process_request):
         print(f"[{datetime.now(BJT).isoformat()}] Server on port {port}")
-        await asyncio.Future()  # run forever
+        await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
