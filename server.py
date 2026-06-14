@@ -200,6 +200,8 @@ def run_collection():
     except:
         log("ERROR: " + traceback.format_exc())
 
+app = default_app()
+
 if __name__ == "__main__":
     # Run collection before starting server
     run_collection()
