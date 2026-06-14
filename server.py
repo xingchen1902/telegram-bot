@@ -13,9 +13,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 COLLECTOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ark_collector.py")
 os.makedirs(DATA_DIR, exist_ok=True)
-UPDATE_INTERVAL = 300  # 5 minutes
+UPDATE_INTERVAL = 300
 
-# Create Bottle WSGI app
 app = Bottle()
 
 def run_collector():
@@ -26,11 +25,21 @@ def run_collector():
     print(f"[{datetime.now().isoformat()}] Collector finished")
 
 def collector_loop():
-    time.sleep(60)
+    print(f"[{datetime.now().isoformat()}] Starting first collection...")
+    try:
+        run_collector()
+    except Exception as e:
+        print(f"Initial collector error: {e}")
     while True:
-        try: run_collector()
-        except Exception as e: print(f"Collector error: {e}")
         time.sleep(UPDATE_INTERVAL)
+        try:
+            run_collector()
+        except Exception as e:
+            print(f"Collector error: {e}")
+
+# Start background collector thread on module load (works with gunicorn)
+t = threading.Thread(target=collector_loop, daemon=True)
+t.start()
 
 @app.route('/')
 def index():
@@ -59,8 +68,6 @@ def static(filename):
 
 if __name__ == "__main__":
     from bottle import run
-    t = threading.Thread(target=collector_loop, daemon=True)
-    t.start()
     port = int(os.environ.get("PORT", 8899))
     print(f"Starting ARK Dashboard on port {port}...")
     run(app=app, host="0.0.0.0", port=port, debug=False)
