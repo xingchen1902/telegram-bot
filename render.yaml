@@ -3,7 +3,9 @@ services:
     name: ark-dashboard
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT server:app
+    startCommand: python server.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0
+      - key: RPC_URL
+        value: https://bsc-mainnet.nodereal.io/v1/d96a4e697b0541628f61ae6089a97874
