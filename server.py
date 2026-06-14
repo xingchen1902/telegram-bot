@@ -11,29 +11,27 @@ DATA_DIR = os.path.join(DIR, "data")
 STATIC_DIR = os.path.join(DIR, "static")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# RPC endpoints
 RPC_URL = "https://bsc-mainnet.nodereal.io/v1/7b7adb4899124647867575e354005c07"
 TOKEN = "0xCae117ca6Bc8A341D2E7207F30E180f0e5618B9D"
 ADDR_BONUS = "0x8501168656FcaC4628F6910CcABEA8B64Ebe5BD4"
 ADDR_STAKE = "0xd1D95292F450b665566df4c4255615eF4Ed9BD0B"
 
+# In-memory cache
 DATA = {"daily_summary": {}, "current_block": 0, "last_updated": ""}
 
 def log(msg):
     print(f"[{datetime.now(BJT).strftime('%H:%M:%S')}] {msg}", flush=True)
 
+# ====== RPC ======
 def rpc(method, params=None, retries=5):
     if params is None: params=[]
     for i in range(retries):
         try:
             d = requests.post(RPC_URL, json={"jsonrpc":"2.0","method":method,"params":params,"id":1}, timeout=30).json()
             if "result" in d: return d
-            log(f"RPC no result: {d}")
         except Exception as e:
-            log(f"RPC fail ({i+1}/{retries}): {e}")
-            if i == retries-1:
-                log(traceback.format_exc())
-        time.sleep(2)
+            if i == retries-1: log(f"RPC {method} failed: {e}")
+        time.sleep(1)
     return {}
 
 def rpc_batch(items):
@@ -42,7 +40,7 @@ def rpc_batch(items):
 
 def get_block():
     d = rpc("eth_blockNumber")
-    return int(d.get("result","0x0"),16)
+    return int(d.get("result","0x0"),16) if d.get("result") else 0
 
 def get_balance(addr):
     d = rpc("eth_call", [{"to":TOKEN,"data":"0x70a08231"+addr[2:].lower().zfill(64)},"latest"])
@@ -60,8 +58,7 @@ def get_logs(addr, f, t):
     padded = "0x"+addr[2:].lower().zfill(64)
     topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
     seen=set(); logs=[]
-    chunks = list(range(f, t+1, 5000))
-    for idx, start in enumerate(chunks):
+    for start in range(f, t+1, 5000):
         end = min(start+4999, t)
         for tf in [[topic,padded,None],[topic,None,padded]]:
             d = rpc("eth_getLogs", [{"fromBlock":hex(start),"toBlock":hex(end),"address":TOKEN,"topics":tf}])
@@ -70,8 +67,7 @@ def get_logs(addr, f, t):
                     k = l["transactionHash"]+l["logIndex"]
                     if k not in seen: seen.add(k); logs.append(l)
                 break
-        time.sleep(0.1)
-        if (idx+1)%50==0: log(f"  {addr[:10]}... {idx+1}/{len(chunks)} chunks, {len(logs)} logs")
+        time.sleep(0.2)
     return logs
 
 def parse_logs(logs, addr):
@@ -108,10 +104,8 @@ def build_summary(bd, sd, bb, sb, bn):
     return {"last_updated":now,"current_block":bn,"daily_summary":s,"current_balances":{"bonus_pool":round(bb,4),"stake_pool":round(sb,4)}}, td
 
 def save_files(full, today):
-    try:
-        with open(os.path.join(DATA_DIR,"ark_data.json"),"w") as f: json.dump(full,f,indent=2)
-        with open(os.path.join(DATA_DIR,"today_data.json"),"w") as f: json.dump(today,f,indent=2)
-    except Exception as e: log(f"Save err: {e}")
+    with open(os.path.join(DATA_DIR,"ark_data.json"),"w") as f: json.dump(full,f,indent=2)
+    with open(os.path.join(DATA_DIR,"today_data.json"),"w") as f: json.dump(today,f,indent=2)
 
 @route("/")
 def index():
@@ -120,10 +114,7 @@ def index():
 @route("/api/data")
 def api_data():
     response.set_header("Access-Control-Allow-Origin","*")
-    if DATA["daily_summary"]:
-        return DATA
-    try: return json.load(open(os.path.join(DATA_DIR,"ark_data.json")))
-    except: return {"daily_summary":{}}
+    return DATA if DATA["daily_summary"] else json.load(open(os.path.join(DATA_DIR,"ark_data.json")))
 
 @route("/api/today")
 def api_today():
@@ -137,40 +128,24 @@ def api_debug():
     try:
         d = rpc("eth_blockNumber", retries=2)
         bn = int(d.get("result","0x0"),16) if d.get("result") else 0
-        return {"rpc_ok": bool(d.get("result")), "block": bn, "data_updated": DATA.get("last_updated","")}
-    except Exception as e:
-        return {"rpc_ok": False, "error": str(e)}
+        return {"rpc_ok":bool(d.get("result")),"block":bn,"data_days":list((DATA or {}).get("daily_summary",{}).keys())}
+    except Exception as e: return {"rpc_ok":False,"error":str(e)}
 
 @route("/static/<filename:path>")
 def static(filename):
     return static_file(filename, root=STATIC_DIR)
 
-def collector():
+# ====== Full collection ======
+def run_collection():
+    """Blocking collect - called at startup"""
     global DATA
-    log("Collector: starting...")
-    
-    # Load cache
-    try:
-        with open(os.path.join(DATA_DIR,"ark_data.json")) as f:
-            cache = json.load(f)
-            if cache.get("daily_summary"):
-                DATA = cache
-                log(f"Cache loaded: block {cache.get('current_block')}")
-    except: pass
-    
-    # Test RPC
+    log("=== Starting full data collection ===")
     current = get_block()
     if not current:
-        log("ERROR: RPC not responding, collector will retry in 60s")
-        time.sleep(60)
-        current = get_block()
-        if not current:
-            log("ERROR: RPC still not responding, giving up")
-            return
+        log("ERROR: RPC not reachable")
+        return False
     
-    log(f"RPC OK. Current block: {current}")
-    
-    # Find 7-day-ago block
+    log(f"Block {current}")
     target = int((datetime.now(BJT)-timedelta(days=7)).timestamp())
     lo, hi = max(1,current-1200000), current
     for _ in range(25):
@@ -180,16 +155,17 @@ def collector():
         ts=int(d.get("result",{}).get("timestamp",0),16) if d.get("result") else 0
         if ts<target: lo=mid+1
         else: hi=mid
+    log(f"Range: {lo} -> {current}")
     
-    log(f"History: {lo} -> {current} ({current-lo} blocks)")
-    
+    log("Fetching bonus pool transfers...")
     bl = get_logs(ADDR_BONUS, lo, current)
+    log(f"Bonus: {len(bl)} txns")
+    log("Fetching stake pool transfers...")
     sl = get_logs(ADDR_STAKE, lo, current)
-    log(f"Bonus: {len(bl)} txns, Stake: {len(sl)} txns")
+    log(f"Stake: {len(sl)} txns")
     
-    log("Parsing bonus...")
+    log("Parsing data...")
     bd = parse_logs(bl, ADDR_BONUS)
-    log("Parsing stake...")
     sd = parse_logs(sl, ADDR_STAKE)
     
     log("Bonus raw: " + json.dumps({d:{k:round(v,4) for k,v in bd[d].items()} for d in sorted(bd.keys())}))
@@ -197,19 +173,33 @@ def collector():
     
     bb = get_balance(ADDR_BONUS)
     sb = get_balance(ADDR_STAKE)
-    log(f"Balances: bonus={bb:.4f}, stake={sb:.4f}")
+    log(f"Balances: bonus_pool={bb:.4f}, stake_pool={sb:.4f}")
     
     full, td = build_summary(bd, sd, bb, sb, current)
     save_files(full, {**td, "last_updated":full["last_updated"]})
     DATA = full
-    log(f"DONE! Block {current}")
+    log("=== Collection DONE ===")
+    return True
+
+def collector_loop():
+    """Background loop that polls every 15s"""
+    global DATA
+    time.sleep(5)  # Wait for initial collection
     
-    last = current
+    # If DATA is still empty, run collection here
+    if not DATA.get("daily_summary"):
+        log("No DATA from main thread, running collection...")
+        run_collection()
+    
+    last = DATA.get("current_block", 0)
+    bd = {}; sd = {}  # Will rebuild these from DATA
+    
     while True:
         time.sleep(15)
         try:
             current = get_block()
-            if current > last:
+            if current and current > last:
+                log(f"Polling new blocks: {last+1} -> {current}")
                 for addr, store in [(ADDR_BONUS,bd),(ADDR_STAKE,sd)]:
                     logs = get_logs(addr, last+1, current)
                     if logs:
@@ -222,14 +212,24 @@ def collector():
                 full, td = build_summary(bd, sd, bb, sb, current)
                 save_files(full, {**td, "last_updated":full["last_updated"]})
                 DATA = full
-                log(f"Poll: Block {current}")
+                log(f"Poll update: Block {current}")
                 last = current
-        except: pass
+        except Exception as e: log(f"Poll err: {e}")
 
 app = default_app()
+
 if __name__ == "__main__":
-    t = threading.Thread(target=collector, daemon=True)
+    # Run collection BEFORE starting server (blocking, but gunicorn timeout=300 handles this)
+    if run_collection():
+        log("Initial collection complete, starting server...")
+    else:
+        log("Collection failed, serving cached data...")
+        try:
+            with open(os.path.join(DATA_DIR,"ark_data.json")) as f:
+                DATA = json.load(f)
+        except: pass
+    
+    t = threading.Thread(target=collector_loop, daemon=True)
     t.start()
     port = int(os.environ.get("PORT", 8899))
-    log(f"Server on port {port}")
     run(host="0.0.0.0", port=port, server="auto")
