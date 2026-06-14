@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ARK Dashboard - Bottle HTTP + data collector"""
-import json, os, threading, time, traceback, sys
+import json, os, threading, time, traceback
 from datetime import datetime, timedelta, timezone
 from bottle import route, run, static_file, response, default_app
 import requests
@@ -16,21 +16,19 @@ TOKEN = "0xCae117ca6Bc8A341D2E7207F30E180f0e5618B9D"
 ADDR_BONUS = "0x8501168656FcaC4628F6910CcABEA8B64Ebe5BD4"
 ADDR_STAKE = "0xd1D95292F450b665566df4c4255615eF4Ed9BD0B"
 
-# In-memory cache
-DATA = {"daily_summary": {}, "current_block": 0, "last_updated": ""}
+DATA_FILE = os.path.join(DATA_DIR, "ark_data.json")
+TODAY_FILE = os.path.join(DATA_DIR, "today_data.json")
 
 def log(msg):
     print(f"[{datetime.now(BJT).strftime('%H:%M:%S')}] {msg}", flush=True)
 
-# ====== RPC ======
-def rpc(method, params=None, retries=5):
+def rpc(method, params=None, retries=3):
     if params is None: params=[]
     for i in range(retries):
         try:
             d = requests.post(RPC_URL, json={"jsonrpc":"2.0","method":method,"params":params,"id":1}, timeout=30).json()
             if "result" in d: return d
-        except Exception as e:
-            if i == retries-1: log(f"RPC {method} failed: {e}")
+        except: pass
         time.sleep(1)
     return {}
 
@@ -67,7 +65,7 @@ def get_logs(addr, f, t):
                     k = l["transactionHash"]+l["logIndex"]
                     if k not in seen: seen.add(k); logs.append(l)
                 break
-        time.sleep(0.2)
+        time.sleep(0.1)
     return logs
 
 def parse_logs(logs, addr):
@@ -85,7 +83,17 @@ def parse_logs(logs, addr):
         if "0x"+l["topics"][2][26:]==al: dly[d]["in"]+=v
     return dly
 
-def build_summary(bd, sd, bb, sb, bn):
+def compute(data_dir, block):
+    """Recompute summary from stored daily data"""
+    bd_file = os.path.join(data_dir, "bonus_daily.json")
+    sd_file = os.path.join(data_dir, "stake_daily.json")
+    try:
+        bd = json.load(open(bd_file))
+        sd = json.load(open(sd_file))
+    except:
+        return None
+    bb = get_balance(ADDR_BONUS)
+    sb = get_balance(ADDR_STAKE)
     ds = sorted(set(list(bd.keys())+list(sd.keys())))
     bb_, sb_ = {}, {}
     rb, rs = bb, sb
@@ -100,13 +108,13 @@ def build_summary(bd, sd, bb, sb, bn):
         n=round(si-so-bo,4)
         s[d]={"date":d,"bonus_withdrawal":bo,"bonus_balance":bb_.get(d,0),"stake_in":si,"stake_out":so,"stake_balance":sb_.get(d,0),"net_stake":n}
     td = s.get(datetime.now(BJT).strftime("%Y-%m-%d"),{})
-    now = datetime.now(BJT).isoformat()
-    return {"last_updated":now,"current_block":bn,"daily_summary":s,"current_balances":{"bonus_pool":round(bb,4),"stake_pool":round(sb,4)}}, td
+    full = {"last_updated":datetime.now(BJT).isoformat(),"current_block":block,"daily_summary":s,"current_balances":{"bonus_pool":round(bb,4),"stake_pool":round(sb,4)}}
+    today = {"bonus_withdrawal":td.get("bonus_withdrawal",0),"stake_in":td.get("stake_in",0),"stake_out":td.get("stake_out",0),"net_stake":td.get("net_stake",0),"bonus_balance":td.get("bonus_balance",0),"stake_balance":td.get("stake_balance",0),"last_updated":full["last_updated"]}
+    json.dump(full, open(DATA_FILE,"w"), indent=2)
+    json.dump(today, open(TODAY_FILE,"w"), indent=2)
+    return full
 
-def save_files(full, today):
-    with open(os.path.join(DATA_DIR,"ark_data.json"),"w") as f: json.dump(full,f,indent=2)
-    with open(os.path.join(DATA_DIR,"today_data.json"),"w") as f: json.dump(today,f,indent=2)
-
+# ====== Bottle Routes ======
 @route("/")
 def index():
     return static_file("dashboard.html", root=STATIC_DIR)
@@ -114,12 +122,13 @@ def index():
 @route("/api/data")
 def api_data():
     response.set_header("Access-Control-Allow-Origin","*")
-    return DATA if DATA["daily_summary"] else json.load(open(os.path.join(DATA_DIR,"ark_data.json")))
+    try: return json.load(open(DATA_FILE))
+    except: return {"daily_summary":{}}
 
 @route("/api/today")
 def api_today():
     response.set_header("Access-Control-Allow-Origin","*")
-    try: return json.load(open(os.path.join(DATA_DIR,"today_data.json")))
+    try: return json.load(open(TODAY_FILE))
     except: return {"error":"No data"}
 
 @route("/api/debug")
@@ -128,108 +137,72 @@ def api_debug():
     try:
         d = rpc("eth_blockNumber", retries=2)
         bn = int(d.get("result","0x0"),16) if d.get("result") else 0
-        return {"rpc_ok":bool(d.get("result")),"block":bn,"data_days":list((DATA or {}).get("daily_summary",{}).keys())}
+        try: data = json.load(open(DATA_FILE))
+        except: data = {}
+        return {"rpc_ok":bool(d.get("result")),"block":bn,"data_updated":data.get("last_updated","")}
     except Exception as e: return {"rpc_ok":False,"error":str(e)}
+
+@route("/api/recollect")
+def api_recollect():
+    """Manually trigger collection"""
+    response.set_header("Access-Control-Allow-Origin","*")
+    threading.Thread(target=run_collection, daemon=True).start()
+    return {"status":"started"}
 
 @route("/static/<filename:path>")
 def static(filename):
     return static_file(filename, root=STATIC_DIR)
 
-# ====== Full collection ======
+# ====== Full Collection ======
 def run_collection():
-    """Blocking collect - called at startup"""
-    global DATA
-    log("=== Starting full data collection ===")
-    current = get_block()
-    if not current:
-        log("ERROR: RPC not reachable")
-        return False
-    
-    log(f"Block {current}")
-    target = int((datetime.now(BJT)-timedelta(days=7)).timestamp())
-    lo, hi = max(1,current-1200000), current
-    for _ in range(25):
-        if lo>=hi: break
-        mid=(lo+hi)//2
-        d=rpc("eth_getBlockByNumber",[hex(mid),False])
-        ts=int(d.get("result",{}).get("timestamp",0),16) if d.get("result") else 0
-        if ts<target: lo=mid+1
-        else: hi=mid
-    log(f"Range: {lo} -> {current}")
-    
-    log("Fetching bonus pool transfers...")
-    bl = get_logs(ADDR_BONUS, lo, current)
-    log(f"Bonus: {len(bl)} txns")
-    log("Fetching stake pool transfers...")
-    sl = get_logs(ADDR_STAKE, lo, current)
-    log(f"Stake: {len(sl)} txns")
-    
-    log("Parsing data...")
-    bd = parse_logs(bl, ADDR_BONUS)
-    sd = parse_logs(sl, ADDR_STAKE)
-    
-    log("Bonus raw: " + json.dumps({d:{k:round(v,4) for k,v in bd[d].items()} for d in sorted(bd.keys())}))
-    log("Stake raw: " + json.dumps({d:{k:round(v,4) for k,v in sd[d].items()} for d in sorted(sd.keys())}))
-    
-    bb = get_balance(ADDR_BONUS)
-    sb = get_balance(ADDR_STAKE)
-    log(f"Balances: bonus_pool={bb:.4f}, stake_pool={sb:.4f}")
-    
-    full, td = build_summary(bd, sd, bb, sb, current)
-    save_files(full, {**td, "last_updated":full["last_updated"]})
-    DATA = full
-    log("=== Collection DONE ===")
-    return True
-
-def collector_loop():
-    """Background loop that polls every 15s"""
-    global DATA
-    time.sleep(5)  # Wait for initial collection
-    
-    # If DATA is still empty, run collection here
-    if not DATA.get("daily_summary"):
-        log("No DATA from main thread, running collection...")
-        run_collection()
-    
-    last = DATA.get("current_block", 0)
-    bd = {}; sd = {}  # Will rebuild these from DATA
-    
-    while True:
-        time.sleep(15)
-        try:
-            current = get_block()
-            if current and current > last:
-                log(f"Polling new blocks: {last+1} -> {current}")
-                for addr, store in [(ADDR_BONUS,bd),(ADDR_STAKE,sd)]:
-                    logs = get_logs(addr, last+1, current)
-                    if logs:
-                        parsed = parse_logs(logs, addr)
-                        for d,v in parsed.items():
-                            if d not in store: store[d]={"in":0,"out":0}
-                            store[d]["in"]+=v["in"]; store[d]["out"]+=v["out"]
-                bb = get_balance(ADDR_BONUS)
-                sb = get_balance(ADDR_STAKE)
-                full, td = build_summary(bd, sd, bb, sb, current)
-                save_files(full, {**td, "last_updated":full["last_updated"]})
-                DATA = full
-                log(f"Poll update: Block {current}")
-                last = current
-        except Exception as e: log(f"Poll err: {e}")
-
-app = default_app()
+    log("=== Collection START ===")
+    try:
+        current = get_block()
+        if not current:
+            log("ERROR: RPC not reachable")
+            return
+        log(f"Block {current}")
+        
+        target = int((datetime.now(BJT)-timedelta(days=7)).timestamp())
+        lo, hi = max(1,current-1200000), current
+        for _ in range(25):
+            if lo>=hi: break
+            mid=(lo+hi)//2
+            d=rpc("eth_getBlockByNumber",[hex(mid),False])
+            ts=int(d.get("result",{}).get("timestamp",0),16) if d.get("result") else 0
+            if ts<target: lo=mid+1
+            else: hi=mid
+        log(f"Blocks {lo} -> {current}")
+        
+        log("Fetching bonus transfers...")
+        bl = get_logs(ADDR_BONUS, lo, current)
+        log(f"  Bonus: {len(bl)} txns")
+        bd = parse_logs(bl, ADDR_BONUS)
+        
+        log("Fetching stake transfers...")
+        sl = get_logs(ADDR_STAKE, lo, current)
+        log(f"  Stake: {len(sl)} txns")
+        sd = parse_logs(sl, ADDR_STAKE)
+        
+        log("Bonus: " + json.dumps({d:{k:round(v,4) for k,v in bd[d].items()} for d in sorted(bd.keys())}))
+        log("Stake: " + json.dumps({d:{k:round(v,4) for k,v in sd[d].items()} for d in sorted(sd.keys())}))
+        
+        # Save raw daily data
+        json.dump({d:{k:v for k,v in bd[d].items()} for d in bd}, open(os.path.join(DATA_DIR,"bonus_daily.json"),"w"))
+        json.dump({d:{k:v for k,v in sd[d].items()} for d in sd}, open(os.path.join(DATA_DIR,"stake_daily.json"),"w"))
+        
+        # Compute and save
+        full = compute(DATA_DIR, current)
+        if full:
+            log(f"DONE! Block {current}")
+        else:
+            log("ERROR: compute failed")
+    except:
+        log("ERROR: " + traceback.format_exc())
 
 if __name__ == "__main__":
-    # Run collection BEFORE starting server (blocking, but gunicorn timeout=300 handles this)
-    if run_collection():
-        log("Initial collection complete, starting server...")
-    else:
-        log("Collection failed, serving cached data...")
-        try:
-            with open(os.path.join(DATA_DIR,"ark_data.json")) as f:
-                DATA = json.load(f)
-        except: pass
-    
-    t = threading.Thread(target=collector_loop, daemon=True)
-    t.start()
+    # Run collection before starting server
+    run_collection()
+    log("Starting server...")
     port = int(os.environ.get("PORT", 8899))
     run(host="0.0.0.0", port=port, server="auto")
