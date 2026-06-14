@@ -183,15 +183,6 @@ def static(filename):
 
 app = default_app()
 
-# Start collection immediately when module loads (not in __main__)
-# This runs when gunicorn imports the module
-def _start_collector():
-    time.sleep(1)
-    log("Background collector started")
-    run_collection()
-
-threading.Thread(target=_start_collector, daemon=True).start()
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8899))
     log(f"Server on port {port}")
