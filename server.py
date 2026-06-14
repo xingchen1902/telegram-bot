@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""ARK Dashboard Server - real-time monitoring with REST polling"""
+"""ARK Dashboard - Unified HTTP + WebSocket server"""
 import asyncio
 import json
 import os
 import aiohttp
+import websockets
 from datetime import datetime, timedelta, timezone
 from web3 import Web3
 
@@ -18,8 +19,11 @@ ADDR_BONUS = "0x8501168656FcaC4628F6910CcABEA8B64Ebe5BD4"
 ADDR_STAKE = "0xd1D95292F450b665566df4c4255615eF4Ed9BD0B"
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex()
 
+WS_CLIENTS = set()
 SEEN_LOGS = set()
 DATA = {"daily_summary": {}, "current_block": 0, "last_updated": ""}
+MONITOR_BONUS_DAILY = {}
+MONITOR_STAKE_DAILY = {}
 
 # ====== RPC ======
 async def rpc(session, method, params=None):
@@ -37,12 +41,11 @@ async def rpc_batch(session, items):
 
 async def get_block(session):
     d = await rpc(session, "eth_blockNumber")
-    return int(d.get("result","0x0"), 16)
+    return int(d["result"], 16)
 
 async def get_balance(session, addr):
-    d = await rpc(session, "eth_call", [{"to": TOKEN, "data": "0x70a08231" + addr[2:].lower().zfill(64)}, "latest"])
-    if d and d.get("result"): return int(d["result"], 16) / 1e18
-    return 0
+    d = await rpc(session, "eth_call", [{"to": TOKEN, "data": "0x70a08231"+addr[2:].lower().zfill(64)}, "latest"])
+    return int(d["result"], 16)/1e18 if d.get("result") else 0
 
 async def get_ts(session, blocks):
     t = {}
@@ -55,8 +58,8 @@ async def get_ts(session, blocks):
 async def get_logs(session, addr, f, t):
     padded = "0x" + addr[2:].lower().zfill(64)
     logs = {}
-    for start in range(f, t + 1, 25000):
-        end = min(start + 24999, t)
+    for start in range(f, t+1, 25000):
+        end = min(start+24999, t)
         for tf in [[TRANSFER_TOPIC, padded, None], [TRANSFER_TOPIC, None, padded]]:
             d = await rpc(session, "eth_getLogs", [{"fromBlock":hex(start),"toBlock":hex(end),"address":TOKEN,"topics":tf}])
             if isinstance(d.get("result"), list):
@@ -75,10 +78,10 @@ async def parse_logs(session, logs, addr):
         ts = tm.get(bn)
         if not ts: continue
         d = datetime.fromtimestamp(ts, tz=BJT).strftime("%Y-%m-%d")
-        if d not in dly: dly[d] = {"in": 0, "out": 0}
-        v = int(l["data"], 16) / 1e18
-        if "0x"+l["topics"][1][26:] == al: dly[d]["out"] += v
-        if "0x"+l["topics"][2][26:] == al: dly[d]["in"] += v
+        if d not in dly: dly[d] = {"in":0,"out":0}
+        v = int(l["data"],16)/1e18
+        if "0x"+l["topics"][1][26:]==al: dly[d]["out"]+=v
+        if "0x"+l["topics"][2][26:]==al: dly[d]["in"]+=v
     return dly
 
 def build_summary(bd, sd, bb, sb, bn):
@@ -89,45 +92,45 @@ def build_summary(bd, sd, bb, sb, bn):
         bb_[d], sb_[d] = round(rb,4), round(rs,4)
         rb -= bd.get(d,{}).get("in",0)-bd.get(d,{}).get("out",0)
         rs -= sd.get(d,{}).get("in",0)-sd.get(d,{}).get("out",0)
-    now = datetime.now(BJT).isoformat()
-    s = {}
-    for d in ds:
-        b, st = bd.get(d,{}), sd.get(d,{})
-        bo=round(b.get("out",0),4); si=round(st.get("in",0),4); so=round(st.get("out",0),4); n=round(si-so-bo,4)
-        s[d]={"date":d,"bonus_withdrawal":bo,"bonus_balance":bb_.get(d,0),"stake_in":si,"stake_out":so,"stake_balance":sb_.get(d,0),"net_stake":n}
+    s = {d: {"date":d,"bonus_withdrawal":round(bd.get(d,{}).get("out",0),4),"bonus_balance":bb_.get(d,0),"stake_in":round(sd.get(d,{}).get("in",0),4),"stake_out":round(sd.get(d,{}).get("out",0),4),"stake_balance":sb_.get(d,0),"net_stake":round(sd.get(d,{}).get("in",0)-sd.get(d,{}).get("out",0)-bd.get(d,{}).get("out",0),4)} for d in ds}
     td = s.get(datetime.now(BJT).strftime("%Y-%m-%d"),{})
-    full = {"last_updated":now,"current_block":bn,"daily_summary":s,"current_balances":{"bonus_pool":round(bb,4),"stake_pool":round(sb,4)}}
-    return full, td
+    now = datetime.now(BJT).isoformat()
+    return {"last_updated":now,"current_block":bn,"daily_summary":s,"current_balances":{"bonus_pool":round(bb,4),"stake_pool":round(sb,4)}}, td
 
-def save(full, td):
+def save_files(full, today):
     with open(os.path.join(DATA_DIR,"ark_data.json"),"w") as f: json.dump(full,f,indent=2)
-    with open(os.path.join(DATA_DIR,"today_data.json"),"w") as f: json.dump({"bonus_withdrawal":td.get("bonus_withdrawal",0),"stake_in":td.get("stake_in",0),"stake_out":td.get("stake_out",0),"net_stake":td.get("net_stake",0),"bonus_balance":td.get("bonus_balance",0),"stake_balance":td.get("stake_balance",0),"last_updated":full["last_updated"]},f,indent=2)
+    with open(os.path.join(DATA_DIR,"today_data.json"),"w") as f: json.dump(today,f,indent=2)
+
+async def broadcast(msg):
+    if WS_CLIENTS:
+        d = json.dumps(msg)
+        await asyncio.gather(*(c.send(d) for c in WS_CLIENTS.copy() if c.open), return_exceptions=True)
 
 # ====== Monitor Loop ======
-async def monitor():
-    global DATA
+async def monitor_loop():
+    global DATA, MONITOR_BONUS_DAILY, MONITOR_STAKE_DAILY
     async with aiohttp.ClientSession() as sess:
         current = await get_block(sess)
         target = int((datetime.now(BJT)-timedelta(days=7)).timestamp())
         lo, hi = max(1,current-1200000), current
         while lo < hi:
-            mid=(lo+hi)//2
-            d=await rpc(sess,"eth_getBlockByNumber",[hex(mid),False])
-            t=int(d.get("result",{}).get("timestamp",0),16)
-            if t<target: lo=mid+1
-            else: hi=mid
-        print(f"History: blocks {lo}->{current}")
-        
+            mid = (lo+hi)//2
+            d = await rpc(sess, "eth_getBlockByNumber", [hex(mid), False])
+            if int(d.get("result",{}).get("timestamp",0),16) < target: lo = mid+1
+            else: hi = mid
+        print(f"History: blocks {lo} -> {current}")
         bl = await get_logs(sess, ADDR_BONUS, lo, current)
         sl = await get_logs(sess, ADDR_STAKE, lo, current)
         bd = await parse_logs(sess, bl, ADDR_BONUS)
         sd = await parse_logs(sess, sl, ADDR_STAKE)
         bb = await get_balance(sess, ADDR_BONUS)
         sb = await get_balance(sess, ADDR_STAKE)
+        MONITOR_BONUS_DAILY, MONITOR_STAKE_DAILY = bd, sd
         full, td = build_summary(bd, sd, bb, sb, current)
-        save(full, td); DATA = full
-        print(f"History done. {len(bd)+len(sd)} days, block {current}")
-        
+        save_files(full, {**td, "last_updated": full["last_updated"]})
+        DATA = full
+        await broadcast({"type":"full_update","data":full})
+        print(f"History done. Block {current}")
         last = current
         while True:
             try:
@@ -139,55 +142,70 @@ async def monitor():
                         bn = await parse_logs(sess, bl, ADDR_BONUS)
                         sn = await parse_logs(sess, sl, ADDR_STAKE)
                         for d,v in bn.items():
-                            if d not in bd: bd[d]={"in":0,"out":0}
-                            bd[d]["in"]+=v["in"]; bd[d]["out"]+=v["out"]
+                            if d not in MONITOR_BONUS_DAILY: MONITOR_BONUS_DAILY[d]={"in":0,"out":0}
+                            MONITOR_BONUS_DAILY[d]["in"]+=v["in"]; MONITOR_BONUS_DAILY[d]["out"]+=v["out"]
                         for d,v in sn.items():
-                            if d not in sd: sd[d]={"in":0,"out":0}
-                            sd[d]["in"]+=v["in"]; sd[d]["out"]+=v["out"]
-                        bb=await get_balance(sess,ADDR_BONUS)
-                        sb=await get_balance(sess,ADDR_STAKE)
-                        full,td=build_summary(bd,sd,bb,sb,current)
-                        save(full,td); DATA=full
-                        print(f"[{datetime.now(BJT).strftime('%H:%M:%S')}] Block {current} updated")
-                    last=current
-            except Exception as e: print(f"Poll err: {e}")
+                            if d not in MONITOR_STAKE_DAILY: MONITOR_STAKE_DAILY[d]={"in":0,"out":0}
+                            MONITOR_STAKE_DAILY[d]["in"]+=v["in"]; MONITOR_STAKE_DAILY[d]["out"]+=v["out"]
+                        bb = await get_balance(sess, ADDR_BONUS)
+                        sb = await get_balance(sess, ADDR_STAKE)
+                        full, td = build_summary(MONITOR_BONUS_DAILY, MONITOR_STAKE_DAILY, bb, sb, current)
+                        save_files(full, {**td, "last_updated": full["last_updated"]})
+                        DATA = full
+                        await broadcast({"type":"full_update","data":full})
+                        print(f"  [{datetime.now(BJT).strftime('%H:%M:%S')}] Block {current}")
+                    last = current
+            except Exception as e: print(f"  Poll: {e}")
             await asyncio.sleep(15)
 
-# ====== HTTP Server ======
+# ====== WebSocket Handler ======
+async def ws_handler(ws):
+    WS_CLIENTS.add(ws)
+    print(f"  WS client ({len(WS_CLIENTS)})")
+    try:
+        if DATA["daily_summary"]:
+            await ws.send(json.dumps({"type":"full_update","data":DATA}))
+        async for _ in ws: pass
+    except: pass
+    finally: WS_CLIENTS.discard(ws)
+
+# ====== HTTP Handler (single port) ======
 async def handle(reader, writer):
     try:
         req = (await reader.read(65536)).decode()
         if not req: writer.close(); return
         path = req.split(" ")[1] if " " in req else "/"
-        ct = "text/html"; body = b""
         if path == "/":
-            with open(os.path.join(STATIC_DIR,"dashboard.html")) as f: body=f.read().encode()
+            with open(os.path.join(STATIC_DIR,"dashboard.html")) as f: body = f.read().encode()
+            ct = "text/html"
         elif path == "/api/data":
-            ct="application/json";
-            if DATA["daily_summary"]: body=json.dumps(DATA).encode()
+            ct = "application/json"
+            if DATA["daily_summary"]: body = json.dumps(DATA).encode()
             else:
-                try: body=open(os.path.join(DATA_DIR,"ark_data.json"),"rb").read()
-                except: body=b'{"daily_summary":{}}'
+                try: body = open(os.path.join(DATA_DIR,"ark_data.json"),"rb").read()
+                except: body = b'{"daily_summary":{}}'
         elif path == "/api/today":
-            ct="application/json";
-            try: body=open(os.path.join(DATA_DIR,"today_data.json"),"rb").read()
-            except: body=b'{"error":"No data"}'
+            ct = "application/json"
+            try: body = open(os.path.join(DATA_DIR,"today_data.json"),"rb").read()
+            except: body = b'{"error":"No data"}'
         elif path.startswith("/static/"):
-            fname=path.split("/")[-1]; fp=os.path.join(STATIC_DIR,fname)
+            fn = path.split("/")[-1]; fp = os.path.join(STATIC_DIR,fn)
             if os.path.exists(fp):
-                with open(fp,"rb") as f: body=f.read()
+                with open(fp,"rb") as f: body = f.read()
+                ct = "text/html" if fn.endswith(".html") else "text/css"
             else: writer.close(); return
         else: writer.close(); return
-        h=f"HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len(body)}\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+        h = f"HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len(body)}\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
         writer.write(h.encode()+body); await writer.drain()
     except: pass
     finally: writer.close()
 
 async def main():
-    asyncio.create_task(monitor())
-    srv = await asyncio.start_server(handle, "0.0.0.0", int(os.environ.get("PORT",8899)))
-    print(f"[{datetime.now(BJT).isoformat()}] Server on port {int(os.environ.get('PORT',8899))}")
-    async with srv: await srv.serve_forever()
+    asyncio.create_task(monitor_loop())
+    ws_srv = await websockets.serve(ws_handler, "0.0.0.0", int(os.environ.get("PORT", 8899)))
+    http_srv = await asyncio.start_server(handle, "0.0.0.0", int(os.environ.get("PORT", 8899)))
+    print(f"[{datetime.now(BJT).isoformat()}] Server on port {int(os.environ.get('PORT', 8899))}")
+    await asyncio.gather(ws_srv.serve_forever(), http_srv.serve_forever())
 
 if __name__ == "__main__":
     asyncio.run(main())

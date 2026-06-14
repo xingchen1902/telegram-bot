@@ -173,7 +173,7 @@ function updateTable(summary) {
 
 // Connect via WebSocket
 const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsUrl = protocol + '//' + location.hostname + ':8898';
+const wsUrl = protocol + '//' + location.host;
 let ws = null;
 
 function connectWS() {
