@@ -171,31 +171,7 @@ function updateTable(summary) {
   }).join('');
 }
 
-// Connect via WebSocket
-const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsUrl = protocol + '//' + location.host;
-let ws = null;
-
-function connectWS() {
-  ws = new WebSocket(wsUrl);
-  ws.onopen = () => {
-    document.getElementById('updateTime').textContent = '🕐 等待数据...';
-    document.getElementById('updateStatus').textContent = '● 已连接实时通道';
-  };
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'full_update') {
-      updateDashboard(msg.data);
-    }
-  };
-  ws.onclose = () => {
-    document.getElementById('updateStatus').textContent = '⚠️ 连接断开，5秒后重连...';
-    setTimeout(connectWS, 5000);
-  };
-  ws.onerror = () => { ws.close(); };
-}
-
-// Also poll REST API as fallback
+// Poll REST API
 async function pollRest() {
   try {
     const r = await fetch('/api/data');
@@ -206,8 +182,7 @@ async function pollRest() {
   } catch(e) {}
 }
 
-// Start
-connectWS();
+// Start - poll REST API every 15 seconds
 pollRest();
 setInterval(pollRest, 15000);
 </script>
