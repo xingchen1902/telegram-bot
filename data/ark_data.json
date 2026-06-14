@@ -1,0 +1,73 @@
+{
+  "last_updated": "2026-06-14T03:14:03.682798+00:00",
+  "current_block": 104102198,
+  "daily_summary": {
+    "2026-06-08": {
+      "date": "2026-06-08",
+      "bonus_withdrawal": 104677.4158,
+      "bonus_balance": 9613283.0701,
+      "stake_in": 110275.736,
+      "stake_out": 53208.3647,
+      "stake_balance": 23983273.3094,
+      "net_stake": -47610.0445
+    },
+    "2026-06-09": {
+      "date": "2026-06-09",
+      "bonus_withdrawal": 129442.8246,
+      "bonus_balance": 9483840.2455,
+      "stake_in": 181001.975,
+      "stake_out": 61665.4714,
+      "stake_balance": 24102609.813,
+      "net_stake": -10106.321
+    },
+    "2026-06-10": {
+      "date": "2026-06-10",
+      "bonus_withdrawal": 130737.131,
+      "bonus_balance": 9353103.1145,
+      "stake_in": 156872.121,
+      "stake_out": 62874.8281,
+      "stake_balance": 24196607.1059,
+      "net_stake": -36739.8381
+    },
+    "2026-06-11": {
+      "date": "2026-06-11",
+      "bonus_withdrawal": 150914.9008,
+      "bonus_balance": 9202188.2137,
+      "stake_in": 147090.963,
+      "stake_out": 66478.272,
+      "stake_balance": 24277219.7969,
+      "net_stake": -70302.2098
+    },
+    "2026-06-12": {
+      "date": "2026-06-12",
+      "bonus_withdrawal": 162498.0278,
+      "bonus_balance": 9039690.1859,
+      "stake_in": 128240.013,
+      "stake_out": 70148.9478,
+      "stake_balance": 24335310.8621,
+      "net_stake": -104406.9626
+    },
+    "2026-06-13": {
+      "date": "2026-06-13",
+      "bonus_withdrawal": 198901.4481,
+      "bonus_balance": 8840788.7378,
+      "stake_in": 137799.585,
+      "stake_out": 55629.3848,
+      "stake_balance": 24417481.0623,
+      "net_stake": -116731.2479
+    },
+    "2026-06-14": {
+      "date": "2026-06-14",
+      "bonus_withdrawal": 89708.0237,
+      "bonus_balance": 8751080.7141,
+      "stake_in": 34463.758,
+      "stake_out": 17505.4367,
+      "stake_balance": 24434439.3837,
+      "net_stake": -72749.7024
+    }
+  },
+  "current_balances": {
+    "bonus_pool": 8751080.7141,
+    "stake_pool": 24434439.3837
+  }
+}
