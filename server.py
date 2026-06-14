@@ -26,18 +26,17 @@ def run_collector():
     print(f"[{datetime.now(BJT).isoformat()}] Collector finished")
 
 def collector_loop():
-    print(f"[{datetime.now(BJT).isoformat()}] Starting first collection...")
-    try:
-        run_collector()
-    except Exception as e:
-        print(f"Initial collector error: {e}")
+    # Wait for server to be ready before first collection
+    time.sleep(30)
+    print(f"[{datetime.now(BJT).isoformat()}] Starting background collection...")
     while True:
-        time.sleep(UPDATE_INTERVAL)
         try:
             run_collector()
         except Exception as e:
             print(f"Collector error: {e}")
+        time.sleep(UPDATE_INTERVAL)
 
+# Start collector in background (won't block gunicorn startup)
 t = threading.Thread(target=collector_loop, daemon=True)
 t.start()
 
@@ -48,14 +47,18 @@ def index():
 @app.route('/api/data')
 def api_data():
     p = os.path.join(DATA_DIR, "ark_data.json")
-    if not os.path.exists(p): return {"error": "No data yet", "daily_summary": {}}
-    with open(p) as f: return json.load(f)
+    if not os.path.exists(p):
+        return {"error": "No data yet", "daily_summary": {}}
+    with open(p) as f:
+        return json.load(f)
 
 @app.route('/api/today')
 def api_today():
     p = os.path.join(DATA_DIR, "today_data.json")
-    if not os.path.exists(p): return {"error": "No data yet"}
-    with open(p) as f: return json.load(f)
+    if not os.path.exists(p):
+        return {"error": "No data yet"}
+    with open(p) as f:
+        return json.load(f)
 
 @app.route('/api/refresh')
 def api_refresh():
