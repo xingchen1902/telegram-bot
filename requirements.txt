@@ -2,3 +2,4 @@ bottle>=0.13
 web3>=6.0
 gunicorn>=20.0
 requests>=2.25
+aiohttp>=3.8
