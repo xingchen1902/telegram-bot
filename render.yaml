@@ -3,7 +3,9 @@ services:
     name: ark-dashboard
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT server:app
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT --timeout 300 --keep-alive 30 server:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0
+      - key: WEB3_DISABLE_WARNINGS
+        value: "1"
