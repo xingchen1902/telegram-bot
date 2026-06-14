@@ -13,6 +13,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 # RPC endpoints (rotate to avoid rate limits)
 RPC_ENDPOINTS = [
+    "https://bsc-mainnet.nodereal.io/v1/7b7adb4899124647867575e354005c07",
     "https://bsc-dataseed1.binance.org",
     "https://bsc-dataseed2.binance.org",
     "https://bsc-dataseed3.binance.org",
