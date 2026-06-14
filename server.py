@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 
-from bottle import route, run, static_file, template, response
+from bottle import Bottle, static_file
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -15,63 +15,52 @@ COLLECTOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ark_collec
 os.makedirs(DATA_DIR, exist_ok=True)
 UPDATE_INTERVAL = 300  # 5 minutes
 
+# Create Bottle WSGI app
+app = Bottle()
+
 def run_collector():
-    """Run the data collector"""
     print(f"[{datetime.now().isoformat()}] Running collector...")
-    result = subprocess.run(
-        ["python3", COLLECTOR],
-        capture_output=True, text=True, timeout=600
-    )
+    result = subprocess.run(["python3", COLLECTOR], capture_output=True, text=True, timeout=600)
     for line in (result.stdout or "").strip().split('\n'):
-        if line.strip():
-            print(f"  {line}")
-    if result.stderr:
-        print(f"  ERR: {result.stderr}")
+        if line.strip(): print(f"  {line}")
     print(f"[{datetime.now().isoformat()}] Collector finished")
 
 def collector_loop():
-    """Background thread - runs collector every 5 minutes"""
-    # Wait a bit on first run, then loop
-    time.sleep(60)  # Wait 1 minute before first auto-refresh
+    time.sleep(60)
     while True:
-        try:
-            run_collector()
-        except Exception as e:
-            print(f"Collector error: {e}")
+        try: run_collector()
+        except Exception as e: print(f"Collector error: {e}")
         time.sleep(UPDATE_INTERVAL)
 
-@route('/')
+@app.route('/')
 def index():
     return static_file("dashboard.html", root=STATIC_DIR)
 
-@route('/api/data')
+@app.route('/api/data')
 def api_data():
-    path = os.path.join(DATA_DIR, "ark_data.json")
-    if not os.path.exists(path):
-        return {"error": "No data yet", "daily_summary": {}}
-    with open(path) as f:
-        return json.load(f)
+    p = os.path.join(DATA_DIR, "ark_data.json")
+    if not os.path.exists(p): return {"error": "No data yet", "daily_summary": {}}
+    with open(p) as f: return json.load(f)
 
-@route('/api/today')
+@app.route('/api/today')
 def api_today():
-    path = os.path.join(DATA_DIR, "today_data.json")
-    if not os.path.exists(path):
-        return {"error": "No data yet"}
-    with open(path) as f:
-        return json.load(f)
+    p = os.path.join(DATA_DIR, "today_data.json")
+    if not os.path.exists(p): return {"error": "No data yet"}
+    with open(p) as f: return json.load(f)
 
-@route('/api/refresh')
+@app.route('/api/refresh')
 def api_refresh():
     threading.Thread(target=run_collector, daemon=True).start()
     return {"status": "refreshing"}
 
-@route('/static/<filename>')
+@app.route('/static/<filename>')
 def static(filename):
     return static_file(filename, root=STATIC_DIR)
 
 if __name__ == "__main__":
-    # Start background updater
+    from bottle import run
     t = threading.Thread(target=collector_loop, daemon=True)
     t.start()
-    print("Starting ARK Dashboard on port 8899...")
-    run(host="0.0.0.0", port=8899, debug=False)
+    port = int(os.environ.get("PORT", 8899))
+    print(f"Starting ARK Dashboard on port {port}...")
+    run(app=app, host="0.0.0.0", port=port, debug=False)
