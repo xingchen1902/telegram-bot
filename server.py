@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ARK Dashboard - Unified HTTP + WebSocket server"""
+"""ARK Dashboard - Unified HTTP + WebSocket on single port"""
 import asyncio
 import json
 import os
@@ -167,45 +167,44 @@ async def ws_handler(ws):
             await ws.send(json.dumps({"type":"full_update","data":DATA}))
         async for _ in ws: pass
     except: pass
-    finally: WS_CLIENTS.discard(ws)
+    finally:
+        WS_CLIENTS.discard(ws)
 
-# ====== HTTP Handler (single port) ======
-async def handle(reader, writer):
-    try:
-        req = (await reader.read(65536)).decode()
-        if not req: writer.close(); return
-        path = req.split(" ")[1] if " " in req else "/"
-        if path == "/":
-            with open(os.path.join(STATIC_DIR,"dashboard.html")) as f: body = f.read().encode()
-            ct = "text/html"
-        elif path == "/api/data":
-            ct = "application/json"
-            if DATA["daily_summary"]: body = json.dumps(DATA).encode()
-            else:
-                try: body = open(os.path.join(DATA_DIR,"ark_data.json"),"rb").read()
-                except: body = b'{"daily_summary":{}}'
-        elif path == "/api/today":
-            ct = "application/json"
-            try: body = open(os.path.join(DATA_DIR,"today_data.json"),"rb").read()
-            except: body = b'{"error":"No data"}'
-        elif path.startswith("/static/"):
-            fn = path.split("/")[-1]; fp = os.path.join(STATIC_DIR,fn)
-            if os.path.exists(fp):
-                with open(fp,"rb") as f: body = f.read()
-                ct = "text/html" if fn.endswith(".html") else "text/css"
-            else: writer.close(); return
-        else: writer.close(); return
-        h = f"HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {len(body)}\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
-        writer.write(h.encode()+body); await writer.drain()
-    except: pass
-    finally: writer.close()
+# ====== HTTP request handler for WebSocket upgrade detection ======
+async def process_request(path, request_headers):
+    """Intercept non-WebSocket requests and handle them as HTTP"""
+    if path == "/":
+        try:
+            with open(os.path.join(STATIC_DIR,"dashboard.html"),"rb") as f:
+                return (200, [("Content-Type","text/html"),("Access-Control-Allow-Origin","*")], f.read())
+        except: return (500, [], b"Error")
+    elif path == "/api/data":
+        if DATA["daily_summary"]:
+            body = json.dumps(DATA).encode()
+        else:
+            try: body = open(os.path.join(DATA_DIR,"ark_data.json"),"rb").read()
+            except: body = b'{"daily_summary":{}}'
+        return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*")], body)
+    elif path == "/api/today":
+        try: body = open(os.path.join(DATA_DIR,"today_data.json"),"rb").read()
+        except: body = b'{"error":"No data"}'
+        return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*")], body)
+    elif path.startswith("/static/"):
+        fn = path.split("/")[-1]
+        fp = os.path.join(STATIC_DIR, fn)
+        if os.path.exists(fp):
+            with open(fp,"rb") as f:
+                return (200, [("Content-Type","text/html" if fn.endswith(".html") else "text/css"),("Access-Control-Allow-Origin","*")], f.read())
+    return None  # Let websockets handle (WebSocket upgrade)
 
 async def main():
+    port = int(os.environ.get("PORT", 8899))
     asyncio.create_task(monitor_loop())
-    ws_srv = await websockets.serve(ws_handler, "0.0.0.0", int(os.environ.get("PORT", 8899)))
-    http_srv = await asyncio.start_server(handle, "0.0.0.0", int(os.environ.get("PORT", 8899)))
-    print(f"[{datetime.now(BJT).isoformat()}] Server on port {int(os.environ.get('PORT', 8899))}")
-    await asyncio.gather(ws_srv.serve_forever(), http_srv.serve_forever())
+    
+    # Use websockets library with process_request for HTTP
+    async with websockets.serve(ws_handler, "0.0.0.0", port, process_request=process_request):
+        print(f"[{datetime.now(BJT).isoformat()}] Server on port {port}")
+        await asyncio.Future()  # run forever
 
 if __name__ == "__main__":
     asyncio.run(main())
